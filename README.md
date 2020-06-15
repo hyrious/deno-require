@@ -2,14 +2,13 @@
 
 make deno *require* again (you don't need this, seriously)
 
-instead, you should check out [pika.dev](https://pika.dev) and [jspm.io](dev.jspm.io)
+instead, you should check out [pika.dev](https://pika.dev) and [jspm.io](https://jspm.io)
 to look for dependencies you need. also look at [this post](https://denotutorials.net/migrating-your-npm-packages-to-deno.html)
 for migration details
 
 #### still here? alright, I'll give you what you want
 
 ```ts
-// https://denotutorials.net/migrating-your-npm-packages-to-deno.html
 import * as fs from "https://deno.land/std/fs/mod.ts";
 import * as path from "https://deno.land/std/path/mod.ts";
 
