@@ -1,1 +1,3 @@
-export * from "./require.ts";
+import require from "./require.ts";
+
+export default require
