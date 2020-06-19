@@ -1,53 +1,95 @@
+// use node modules without node
+
 import * as fs from "https://deno.land/std/fs/mod.ts";
 import * as path from "https://deno.land/std/path/mod.ts";
+import { readFileStr } from "./file-cache.ts";
 
-let require = (function () {
-  var cache = Object.create(null);
-  var tmpdir = path.dirname(Deno.makeTempFileSync());
-  fs.ensureDirSync(path.join(tmpdir, "deno-require"));
+const cache: Record<string, { exports: any }> = Object.create(null);
+const tmpdir = path.join(Deno.dir("tmp") ?? ".", "deno-require");
+await fs.ensureDir(tmpdir);
 
-  const toText = (r: Response) => r.text();
+type StringMap = Record<string, string>;
+const requireMap: StringMap = Object.create(null);
 
-  async function resolve(name: string) {
-    let code: any, type: string;
-    if (name.endsWith(".js")) {
-      code = await fs.readFileStr(name);
-      type = "js";
-    } else if (name.endsWith(".json")) {
-      code = await fs.readJson(name);
-      type = "json";
+const stack: string[] = [];
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+
+export function setRequireMap(map: StringMap) {
+  for (const [key, value] of Object.entries(map)) {
+    if (value) {
+      requireMap[key] = value;
     } else {
-      const tmpfile = path.join(tmpdir, "deno-require", name);
-      if (fs.existsSync(tmpfile)) {
-        code = await fs.readFileStr(tmpfile, { encoding: "utf-8" });
-      } else {
-        code = await fetch(`https://cdn.jsdelivr.net/npm/${name}`).then(toText);
-        await fs.writeFileStr(tmpfile, code);
-      }
-      try {
-        code = JSON.parse(code);
-        type = "json";
-      } catch {
-        type = "js";
-      }
+      delete requireMap[key];
     }
-    return { code, type };
   }
+}
 
-  return async function (name: string) {
-    if (!(name in cache)) {
-      let { code, type } = await resolve(name);
-      if (type === "js") {
-        let module = { exports: {} };
-        cache[name] = module;
-        let wrapper = Function("require, exports, module", code);
-        wrapper(require, module.exports, module);
-      } else if (type === "json") {
-        cache[name] = { exports: code };
-      }
+function tryUrl(name: string) {
+  try {
+    return new URL(name);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchContent(name: string, url: string) {
+  const tmpname = name.split("/").join("-");
+  return await readFileStr(path.join(tmpdir, tmpname), async () => {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`can not download module from ${url}`);
     }
-    return cache[name].exports;
-  };
-})();
+    return await response.text();
+  });
+}
 
-export default require;
+function tryJson(text: string) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function getRealName() {
+  let result = "";
+  for (const name of stack) {
+    if (name.includes("/")) {
+      const lastIndexOfSlash = result.lastIndexOf("/");
+      if (lastIndexOfSlash !== -1) {
+        if (path.extname(result.substring(lastIndexOfSlash))) {
+          result = result.substring(0, lastIndexOfSlash);
+        }
+      }
+      result = path.posix.join(result, name);
+    } else {
+      result = name;
+    }
+  }
+  return result;
+}
+
+async function resolve(name: string) {
+  const maybeUrl = tryUrl(name);
+  const url = maybeUrl?.href ?? `https://cdn.jsdelivr.net/npm/${name}`;
+  let text = await fetchContent(name, url);
+  text = text.replace("require(", "await require(");
+  const maybeJson = tryJson(text);
+  if (maybeJson != null) return maybeJson;
+  const module = { exports: {} };
+  const wrapper = new AsyncFunction("require, exports, module", text);
+  await wrapper(require, module.exports, module);
+  return module;
+}
+
+export async function require(name: string) {
+  if (name in requireMap) {
+    name = requireMap[name];
+  }
+  if (!(name in cache)) {
+    stack.push(name);
+    cache[name] = await resolve(getRealName());
+    stack.pop();
+  }
+  return cache[name].exports;
+}
